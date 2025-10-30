@@ -204,18 +204,16 @@ app.get('/api/monthly-summary', async (req, res) => {
     try {
         const { month, year } = req.query;
 
-        let query = `
+        // First get overall totals
+        let overallQuery = `
             SELECT 
-                client,
-                category,
                 COUNT(DISTINCT agent_id) as total_aftes,
                 COUNT(DISTINCT CASE 
                     WHEN flag_qa = 'Critical' OR flag_qa = 'Low' 
                     OR flag_prod = 'Critical' OR flag_prod = 'Low' 
                     THEN agent_id 
                 END) as underperformers,
-                COUNT(DISTINCT week_range) as weeks_with_issues,
-                ROUND(AVG(kpi_qa), 2) as avg_score
+                ROUND(AVG(kpi_qa) * 100, 2) as avg_score
             FROM consolidations.data_qperform_weekly
             WHERE 1=1
         `;
@@ -224,23 +222,57 @@ app.get('/api/monthly-summary', async (req, res) => {
         let paramCount = 1;
 
         if (month) {
-            query += ` AND month_name = $${paramCount}`;
+            overallQuery += ` AND month_name = $${paramCount}`;
             params.push(month);
             paramCount++;
         }
 
         if (year) {
-            query += ` AND year_num = $${paramCount}`;
+            overallQuery += ` AND year_num = $${paramCount}`;
             params.push(parseInt(year));
             paramCount++;
         }
 
-        query += ` GROUP BY client, category ORDER BY client, category`;
+        // Get breakdown by client and category
+        let detailQuery = `
+            SELECT 
+                client,
+                category,
+                COUNT(DISTINCT agent_id) as total_aftes,
+                ROUND(AVG(kpi_qa) * 100, 2) as avg_score
+            FROM consolidations.data_qperform_weekly
+            WHERE 1=1
+        `;
 
-        const { rows } = await pool.query(query, params);
-        console.log(`✅ Retrieved ${rows.length} summary records`);
+        const detailParams = [];
+        let detailParamCount = 1;
 
-        res.json(rows);
+        if (month) {
+            detailQuery += ` AND month_name = $${detailParamCount}`;
+            detailParams.push(month);
+            detailParamCount++;
+        }
+
+        if (year) {
+            detailQuery += ` AND year_num = $${detailParamCount}`;
+            detailParams.push(parseInt(year));
+            detailParamCount++;
+        }
+
+        detailQuery += ` GROUP BY client, category ORDER BY client, category`;
+
+        const [overallResult, detailResult] = await Promise.all([
+            pool.query(overallQuery, params),
+            pool.query(detailQuery, detailParams)
+        ]);
+
+        console.log(`✅ Retrieved monthly summary - Overall:`, overallResult.rows[0]);
+        console.log(`✅ Retrieved ${detailResult.rows.length} detail records`);
+
+        res.json({
+            overall: overallResult.rows[0] || { total_aftes: 0, underperformers: 0, avg_score: 0 },
+            details: detailResult.rows
+        });
     } catch (err) {
         console.error('❌ Error fetching monthly summary:', err);
         res.status(500).json({ error: 'Server Error', details: err.message });
