@@ -1,5 +1,11 @@
 // qperform-server/server.js
 require('dotenv').config();
+
+// Debug: Check if env vars are loaded
+console.log('🔍 Debug - DB_USER:', process.env.DB_USER ? 'LOADED' : 'NOT LOADED');
+console.log('🔍 Debug - DB_PASSWORD:', process.env.DB_PASSWORD ? 'LOADED' : 'NOT LOADED');
+console.log('🔍 Debug - DB_HOST:', process.env.DB_HOST ? 'LOADED' : 'NOT LOADED');
+
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -17,14 +23,14 @@ app.use(express.json());
 
 // Database connection
 const pool = new Pool({
-    // Use .trim() to strip ALL leading/trailing whitespace (including newlines and carriage returns)
     user: process.env.DB_USER ? process.env.DB_USER.trim() : undefined, 
     host: process.env.DB_HOST ? process.env.DB_HOST.trim() : undefined,
     database: process.env.DB_NAME ? process.env.DB_NAME.trim() : undefined,
-    // This line is the ABSOLUTE critical fix for the password format error
     password: process.env.DB_PASSWORD ? process.env.DB_PASSWORD.trim() : undefined,
     port: parseInt(process.env.DB_PORT || '25060'), 
-    ssl: false, // Must be false if your server doesn't support SSL
+    ssl: {
+        rejectUnauthorized: false  // Required for DigitalOcean managed databases
+    }
 });
 
 // Test connection
