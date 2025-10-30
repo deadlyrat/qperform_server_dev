@@ -202,16 +202,16 @@ app.get('/api/filters', async (req, res) => {
 // Get monthly summary data (aggregated by client and category)
 app.get('/api/monthly-summary', async (req, res) => {
     try {
-        const { month, year } = req.query;
+        const { month, year, category, client, task } = req.query;
 
         // First get overall totals
         let overallQuery = `
-            SELECT 
+            SELECT
                 COUNT(DISTINCT agent_id) as total_aftes,
-                COUNT(DISTINCT CASE 
-                    WHEN flag_qa = 'Critical' OR flag_qa = 'Low' 
-                    OR flag_prod = 'Critical' OR flag_prod = 'Low' 
-                    THEN agent_id 
+                COUNT(DISTINCT CASE
+                    WHEN flag_qa = 'Critical' OR flag_qa = 'Low'
+                    OR flag_prod = 'Critical' OR flag_prod = 'Low'
+                    THEN agent_id
                 END) as underperformers,
                 ROUND(AVG(kpi_qa) * 100, 2) as avg_score
             FROM consolidations.data_qperform_weekly
@@ -233,9 +233,27 @@ app.get('/api/monthly-summary', async (req, res) => {
             paramCount++;
         }
 
+        if (category) {
+            overallQuery += ` AND category = $${paramCount}`;
+            params.push(category);
+            paramCount++;
+        }
+
+        if (client) {
+            overallQuery += ` AND client = $${paramCount}`;
+            params.push(client);
+            paramCount++;
+        }
+
+        if (task) {
+            overallQuery += ` AND task = $${paramCount}`;
+            params.push(task);
+            paramCount++;
+        }
+
         // Get breakdown by client and category
         let detailQuery = `
-            SELECT 
+            SELECT
                 client,
                 category,
                 COUNT(DISTINCT agent_id) as total_aftes,
@@ -259,6 +277,24 @@ app.get('/api/monthly-summary', async (req, res) => {
             detailParamCount++;
         }
 
+        if (category) {
+            detailQuery += ` AND category = $${detailParamCount}`;
+            detailParams.push(category);
+            detailParamCount++;
+        }
+
+        if (client) {
+            detailQuery += ` AND client = $${detailParamCount}`;
+            detailParams.push(client);
+            detailParamCount++;
+        }
+
+        if (task) {
+            detailQuery += ` AND task = $${detailParamCount}`;
+            detailParams.push(task);
+            detailParamCount++;
+        }
+
         detailQuery += ` GROUP BY client, category ORDER BY client, category`;
 
         const [overallResult, detailResult] = await Promise.all([
@@ -268,6 +304,7 @@ app.get('/api/monthly-summary', async (req, res) => {
 
         console.log(`✅ Retrieved monthly summary - Overall:`, overallResult.rows[0]);
         console.log(`✅ Retrieved ${detailResult.rows.length} detail records`);
+        console.log(`🔍 Filters applied: month=${month}, year=${year}, client=${client}, category=${category}, task=${task}`);
 
         res.json({
             overall: overallResult.rows[0] || { total_aftes: 0, underperformers: 0, avg_score: 0 },
