@@ -485,17 +485,239 @@ app.post('/api/action-log', async (req, res) => {
 app.get('/api/table-info', async (req, res) => {
     try {
         const query = `
-            SELECT column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_schema = 'consolidations' 
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'consolidations'
             AND table_name = 'data_qperform_weekly'
             ORDER BY ordinal_position;
         `;
-        
+
         const { rows } = await pool.query(query);
         res.json(rows);
     } catch (err) {
         console.error('❌ Error fetching table info:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// ====================================
+// WARNING & RECOMMENDATION ENDPOINTS
+// ====================================
+
+const warningEngine = require('./warningEngine');
+
+// Get warnings for an agent
+app.get('/api/warnings/:agentEmail', async (req, res) => {
+    try {
+        const { agentEmail } = req.params;
+        const { metricType } = req.query;
+
+        let query = `
+            SELECT * FROM consolidations.warnings
+            WHERE agent_email = $1
+        `;
+        const params = [agentEmail];
+
+        if (metricType) {
+            query += ` AND metric_type = $2`;
+            params.push(metricType);
+        }
+
+        query += ` ORDER BY issue_date DESC`;
+
+        const { rows } = await pool.query(query, params);
+        console.log(`✅ Retrieved ${rows.length} warnings for ${agentEmail}`);
+        res.json(rows);
+    } catch (err) {
+        console.error('❌ Error fetching warnings:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Get active warnings for an agent
+app.get('/api/warnings/:agentEmail/active', async (req, res) => {
+    try {
+        const { agentEmail } = req.params;
+        const { metricType } = req.query;
+
+        const warnings = await warningEngine.getActiveWarnings(pool, agentEmail, metricType);
+        console.log(`✅ Retrieved ${warnings.length} active warnings for ${agentEmail}`);
+        res.json(warnings);
+    } catch (err) {
+        console.error('❌ Error fetching active warnings:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Create a warning
+app.post('/api/warnings', async (req, res) => {
+    try {
+        const warningData = req.body;
+        const warningId = await warningEngine.recordWarning(pool, warningData);
+
+        console.log(`✅ Warning ${warningId} created for ${warningData.agentEmail}`);
+        res.json({
+            success: true,
+            warningId: warningId,
+            message: 'Warning recorded successfully'
+        });
+    } catch (err) {
+        console.error('❌ Error creating warning:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Generate recommendation for an agent
+app.post('/api/recommendations/generate', async (req, res) => {
+    try {
+        const { agentEmail, metricType, weekStartDate, weekEndDate } = req.body;
+
+        const recommendation = await warningEngine.generateRecommendation(
+            pool,
+            agentEmail,
+            metricType,
+            weekStartDate,
+            weekEndDate
+        );
+
+        console.log(`✅ Generated recommendation for ${agentEmail}: Case ${recommendation.case}`);
+        res.json(recommendation);
+    } catch (err) {
+        console.error('❌ Error generating recommendation:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Get recommendations for an agent
+app.get('/api/recommendations/:agentEmail', async (req, res) => {
+    try {
+        const { agentEmail } = req.params;
+        const { metricType, actionedOnly } = req.query;
+
+        let query = `
+            SELECT * FROM consolidations.recommendations
+            WHERE agent_email = $1
+        `;
+        const params = [agentEmail];
+        let paramCount = 2;
+
+        if (metricType) {
+            query += ` AND metric_type = $${paramCount}`;
+            params.push(metricType);
+            paramCount++;
+        }
+
+        if (actionedOnly === 'true') {
+            query += ` AND is_actioned = true`;
+        } else if (actionedOnly === 'false') {
+            query += ` AND is_actioned = false`;
+        }
+
+        query += ` ORDER BY generated_date DESC`;
+
+        const { rows } = await pool.query(query, params);
+        console.log(`✅ Retrieved ${rows.length} recommendations for ${agentEmail}`);
+        res.json(rows);
+    } catch (err) {
+        console.error('❌ Error fetching recommendations:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Get all unactioned recommendations
+app.get('/api/recommendations/unactioned/all', async (req, res) => {
+    try {
+        const query = `
+            SELECT * FROM consolidations.v_unactioned_recommendations
+            ORDER BY priority DESC, days_pending DESC
+        `;
+
+        const { rows } = await pool.query(query);
+        console.log(`✅ Retrieved ${rows.length} unactioned recommendations`);
+        res.json(rows);
+    } catch (err) {
+        console.error('❌ Error fetching unactioned recommendations:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Mark recommendation as actioned
+app.patch('/api/recommendations/:recommendationId/action', async (req, res) => {
+    try {
+        const { recommendationId } = req.params;
+        const { actionedBy, actionedByEmail, actionNotes } = req.body;
+
+        const query = `
+            UPDATE consolidations.recommendations
+            SET is_actioned = true,
+                actioned_date = CURRENT_DATE,
+                actioned_by = $1,
+                actioned_by_email = $2,
+                action_notes = $3
+            WHERE recommendation_id = $4
+            RETURNING *
+        `;
+
+        const { rows } = await pool.query(query, [actionedBy, actionedByEmail, actionNotes, recommendationId]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Recommendation not found' });
+        }
+
+        console.log(`✅ Recommendation ${recommendationId} marked as actioned`);
+        res.json({ success: true, recommendation: rows[0] });
+    } catch (err) {
+        console.error('❌ Error updating recommendation:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Get at-risk agents
+app.get('/api/at-risk-agents', async (req, res) => {
+    try {
+        const query = `
+            SELECT * FROM consolidations.v_at_risk_summary
+            ORDER BY risk_level DESC, weeks_underperforming DESC
+        `;
+
+        const { rows } = await pool.query(query);
+        console.log(`✅ Retrieved ${rows.length} at-risk agents`);
+        res.json(rows);
+    } catch (err) {
+        console.error('❌ Error fetching at-risk agents:', err);
+        res.status(500).json({ error: 'Server Error', details: err.message });
+    }
+});
+
+// Get leadership reports
+app.get('/api/leadership-reports', async (req, res) => {
+    try {
+        const { leaderEmail, activeOnly } = req.query;
+
+        let query = `
+            SELECT * FROM consolidations.leadership_reports
+            WHERE 1=1
+        `;
+        const params = [];
+        let paramCount = 1;
+
+        if (leaderEmail) {
+            query += ` AND leader_email = $${paramCount}`;
+            params.push(leaderEmail);
+            paramCount++;
+        }
+
+        if (activeOnly === 'true') {
+            query += ` AND is_active = true`;
+        }
+
+        query += ` ORDER BY issued_date DESC`;
+
+        const { rows } = await pool.query(query, params);
+        console.log(`✅ Retrieved ${rows.length} leadership reports`);
+        res.json(rows);
+    } catch (err) {
+        console.error('❌ Error fetching leadership reports:', err);
         res.status(500).json({ error: 'Server Error', details: err.message });
     }
 });

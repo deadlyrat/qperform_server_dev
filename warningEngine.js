@@ -32,15 +32,16 @@ const COACHING_COUNTS_AS_ACTION = false;
 
 /**
  * Get active warnings for an agent
+ * Uses existing warnings table
  */
 async function getActiveWarnings(pool, agentEmail, metricType) {
     const query = `
-        SELECT * FROM consolidations.warning_history
+        SELECT * FROM consolidations.warnings
         WHERE agent_email = $1
             AND metric_type = $2
-            AND is_active = true
-            AND (expires_date IS NULL OR expires_date >= CURRENT_DATE)
-        ORDER BY issued_date DESC
+            AND status = 'Active'
+            AND (expiration_date IS NULL OR expiration_date >= CURRENT_DATE)
+        ORDER BY issue_date DESC
     `;
 
     const result = await pool.query(query, [agentEmail, metricType]);
@@ -73,15 +74,21 @@ async function getWeeksUnderperforming(pool, agentEmail, metricType, monthName, 
 
 /**
  * Check if leader has taken action on an underperforming agent
+ * Checks both warnings and action_log tables
  */
 async function checkLeaderAction(pool, agentEmail, weekStartDate) {
     // Check if there's any warning or action logged for this agent around this week
     const query = `
-        SELECT COUNT(*) as action_count
-        FROM consolidations.warning_history
-        WHERE agent_email = $1
-            AND issued_date >= $2 - INTERVAL '7 days'
-            AND issued_date <= $2 + INTERVAL '7 days'
+        SELECT
+            (SELECT COUNT(*) FROM consolidations.warnings
+             WHERE agent_email = $1
+               AND issue_date >= $2 - INTERVAL '7 days'
+               AND issue_date <= $2 + INTERVAL '7 days') +
+            (SELECT COUNT(*) FROM consolidations.action_log
+             WHERE agent_email = $1
+               AND action_date >= $2 - INTERVAL '7 days'
+               AND action_date <= $2 + INTERVAL '7 days')
+        as action_count
     `;
 
     const result = await pool.query(query, [agentEmail, weekStartDate]);
@@ -302,33 +309,38 @@ async function saveRecommendation(pool, recommendation) {
 }
 
 /**
- * Record a warning
+ * Record a warning using existing warnings table
  */
 async function recordWarning(pool, warningData) {
-    const query = `
-        INSERT INTO consolidations.warning_history
-        (agent_id, agent_email, agent_name, warning_type, warning_subtype, metric_type,
-         issued_by, issued_by_email, issued_date, expires_date, notes,
-         related_week_start, related_week_end, client, category)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-        RETURNING warning_id
-    `;
+    // Calculate warning_level from warning_type for backwards compatibility
+    let warningLevel = 1; // Default to Verbal
+    if (warningData.warningType === 'Written') warningLevel = 2;
+    else if (warningData.warningType === 'Coaching') warningLevel = 0;
 
     const expiresDate = warningData.warningType && WARNING_EXPIRATION[warningData.warningType]
         ? new Date(Date.now() + WARNING_EXPIRATION[warningData.warningType] * 24 * 60 * 60 * 1000)
         : null;
 
+    const query = `
+        INSERT INTO consolidations.warnings
+        (agent_email, action_log_id, warning_level, issue_date, expiration_date, status,
+         warning_type, warning_subtype, metric_type, issued_by, notes,
+         week_start_date, week_end_date, client, category)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        RETURNING id
+    `;
+
     const values = [
-        warningData.agentId,
         warningData.agentEmail,
-        warningData.agentName,
+        warningData.actionLogId || null, // Link to action_log if provided
+        warningLevel,
+        warningData.issuedDate || new Date(),
+        expiresDate,
+        'Active',
         warningData.warningType, // 'Verbal', 'Written', 'Coaching'
         warningData.warningSubtype, // e.g., 'Substandard Work - QA'
         warningData.metricType, // 'Production' or 'QA'
         warningData.issuedBy,
-        warningData.issuedByEmail,
-        warningData.issuedDate || new Date(),
-        expiresDate,
         warningData.notes,
         warningData.weekStartDate,
         warningData.weekEndDate,
@@ -337,7 +349,7 @@ async function recordWarning(pool, warningData) {
     ];
 
     const result = await pool.query(query, values);
-    return result.rows[0].warning_id;
+    return result.rows[0].id;
 }
 
 module.exports = {

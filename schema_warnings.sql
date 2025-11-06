@@ -1,39 +1,98 @@
 -- QPerform Warning & Recommendation System Database Schema
 -- This schema implements the Cases A-E warning and recommendation logic
+-- Uses existing warnings and action_log tables
 
 -- ====================================
--- WARNING HISTORY TABLE
--- Tracks all warnings issued to agents
+-- EXTEND EXISTING WARNINGS TABLE
+-- Add columns to support the recommendation engine
 -- ====================================
-CREATE TABLE IF NOT EXISTS consolidations.warning_history (
-    warning_id SERIAL PRIMARY KEY,
-    agent_id VARCHAR(50) NOT NULL,
-    agent_email VARCHAR(255) NOT NULL,
-    agent_name VARCHAR(255),
-    warning_type VARCHAR(50) NOT NULL, -- 'Verbal', 'Written', 'Coaching'
-    warning_subtype VARCHAR(100), -- 'Substandard Work - Production', 'Substandard Work - QA', etc.
-    metric_type VARCHAR(20) NOT NULL, -- 'Production' or 'QA'
-    issued_by VARCHAR(100) NOT NULL, -- Director/AVP who issued
-    issued_by_email VARCHAR(255),
-    issued_date DATE NOT NULL,
-    expires_date DATE, -- When warning becomes inactive (NULL = never expires)
-    is_active BOOLEAN DEFAULT true,
-    notes TEXT,
-    related_week_start DATE, -- Week that triggered this warning
-    related_week_end DATE,
-    client VARCHAR(255), -- Client associated with the warning
-    category VARCHAR(255), -- Category associated with the warning
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
 
-    -- Indexes for performance
-    INDEX idx_agent_email (agent_email),
-    INDEX idx_agent_id (agent_id),
-    INDEX idx_issued_date (issued_date),
-    INDEX idx_is_active (is_active),
-    INDEX idx_metric_type (metric_type),
-    INDEX idx_warning_type (warning_type)
-);
+-- Add new columns to existing warnings table if they don't exist
+DO $$
+BEGIN
+    -- Add warning_type column (Verbal, Written, Coaching)
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='warning_type'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN warning_type VARCHAR(50);
+        -- Migrate existing data: warning_level 1=Verbal, 2=Written, 3+=Written
+        UPDATE consolidations.warnings SET warning_type =
+            CASE
+                WHEN warning_level = 1 THEN 'Verbal'
+                WHEN warning_level >= 2 THEN 'Written'
+                ELSE 'Verbal'
+            END;
+    END IF;
+
+    -- Add metric_type column (Production or QA)
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='metric_type'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN metric_type VARCHAR(20) DEFAULT 'QA';
+    END IF;
+
+    -- Add warning_subtype column
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='warning_subtype'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN warning_subtype VARCHAR(100);
+    END IF;
+
+    -- Add issued_by column
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='issued_by'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN issued_by VARCHAR(255);
+    END IF;
+
+    -- Add notes column
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='notes'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN notes TEXT;
+    END IF;
+
+    -- Add week reference columns
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='week_start_date'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN week_start_date DATE;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='week_end_date'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN week_end_date DATE;
+    END IF;
+
+    -- Add client and category columns
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='client'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN client VARCHAR(255);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='consolidations' AND table_name='warnings' AND column_name='category'
+    ) THEN
+        ALTER TABLE consolidations.warnings ADD COLUMN category VARCHAR(255);
+    END IF;
+END $$;
+
+-- Create indexes on new columns
+CREATE INDEX IF NOT EXISTS idx_warnings_warning_type ON consolidations.warnings(warning_type);
+CREATE INDEX IF NOT EXISTS idx_warnings_metric_type ON consolidations.warnings(metric_type);
+CREATE INDEX IF NOT EXISTS idx_warnings_status ON consolidations.warnings(status);
+CREATE INDEX IF NOT EXISTS idx_warnings_issue_date ON consolidations.warnings(issue_date);
 
 -- ====================================
 -- RECOMMENDATIONS TABLE
@@ -59,15 +118,15 @@ CREATE TABLE IF NOT EXISTS consolidations.recommendations (
     action_notes TEXT,
     client VARCHAR(255),
     category VARCHAR(255),
-    created_at TIMESTAMP DEFAULT NOW(),
-
-    -- Indexes
-    INDEX idx_rec_agent_email (agent_email),
-    INDEX idx_rec_generated_date (generated_date),
-    INDEX idx_rec_is_actioned (is_actioned),
-    INDEX idx_rec_case_type (case_type),
-    INDEX idx_rec_priority (priority)
+    created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Create indexes for recommendations table
+CREATE INDEX IF NOT EXISTS idx_rec_agent_email ON consolidations.recommendations(agent_email);
+CREATE INDEX IF NOT EXISTS idx_rec_generated_date ON consolidations.recommendations(generated_date);
+CREATE INDEX IF NOT EXISTS idx_rec_is_actioned ON consolidations.recommendations(is_actioned);
+CREATE INDEX IF NOT EXISTS idx_rec_case_type ON consolidations.recommendations(case_type);
+CREATE INDEX IF NOT EXISTS idx_rec_priority ON consolidations.recommendations(priority);
 
 -- ====================================
 -- LEADERSHIP BEHAVIOR REPORTS TABLE
@@ -90,13 +149,13 @@ CREATE TABLE IF NOT EXISTS consolidations.leadership_reports (
     reason TEXT NOT NULL, -- Why the report was issued
     notes TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-
-    -- Indexes
-    INDEX idx_leader_email (leader_email),
-    INDEX idx_leader_issued_date (issued_date),
-    INDEX idx_leader_is_active (is_active)
+    updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Create indexes for leadership_reports table
+CREATE INDEX IF NOT EXISTS idx_leader_email ON consolidations.leadership_reports(leader_email);
+CREATE INDEX IF NOT EXISTS idx_leader_issued_date ON consolidations.leadership_reports(issued_date);
+CREATE INDEX IF NOT EXISTS idx_leader_is_active ON consolidations.leadership_reports(is_active);
 
 -- ====================================
 -- AT RISK TRACKING TABLE
@@ -120,13 +179,13 @@ CREATE TABLE IF NOT EXISTS consolidations.at_risk_agents (
     resolved_by VARCHAR(100),
     notes TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-
-    -- Indexes
-    INDEX idx_atrisk_agent_email (agent_email),
-    INDEX idx_atrisk_is_resolved (is_resolved),
-    INDEX idx_atrisk_risk_level (risk_level)
+    updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Create indexes for at_risk_agents table
+CREATE INDEX IF NOT EXISTS idx_atrisk_agent_email ON consolidations.at_risk_agents(agent_email);
+CREATE INDEX IF NOT EXISTS idx_atrisk_is_resolved ON consolidations.at_risk_agents(is_resolved);
+CREATE INDEX IF NOT EXISTS idx_atrisk_risk_level ON consolidations.at_risk_agents(risk_level);
 
 -- ====================================
 -- WARNING EFFECTIVENESS TRACKING
@@ -134,7 +193,7 @@ CREATE TABLE IF NOT EXISTS consolidations.at_risk_agents (
 -- ====================================
 CREATE TABLE IF NOT EXISTS consolidations.warning_effectiveness (
     effectiveness_id SERIAL PRIMARY KEY,
-    warning_id INT REFERENCES consolidations.warning_history(warning_id),
+    warning_id INT REFERENCES consolidations.warnings(id),
     agent_id VARCHAR(50) NOT NULL,
     agent_email VARCHAR(255) NOT NULL,
     weeks_after_warning INT NOT NULL, -- How many weeks after warning
@@ -144,16 +203,17 @@ CREATE TABLE IF NOT EXISTS consolidations.warning_effectiveness (
     improvement_percentage NUMERIC(5,2), -- Percentage improvement
     measured_date DATE NOT NULL,
     notes TEXT,
-    created_at TIMESTAMP DEFAULT NOW(),
-
-    INDEX idx_effectiveness_warning (warning_id),
-    INDEX idx_effectiveness_agent (agent_email)
+    created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Create indexes for warning_effectiveness table
+CREATE INDEX IF NOT EXISTS idx_effectiveness_warning ON consolidations.warning_effectiveness(warning_id);
+CREATE INDEX IF NOT EXISTS idx_effectiveness_agent ON consolidations.warning_effectiveness(agent_email);
 
 -- ====================================
 -- COMMENTS/AUDIT LOG
 -- ====================================
-COMMENT ON TABLE consolidations.warning_history IS 'Tracks all warnings issued to agents for underperformance';
+COMMENT ON TABLE consolidations.warnings IS 'Tracks all warnings issued to agents for underperformance';
 COMMENT ON TABLE consolidations.recommendations IS 'Auto-generated recommendations based on warning history and underperformance';
 COMMENT ON TABLE consolidations.leadership_reports IS 'Behavior reports issued to leaders who fail to follow procedures';
 COMMENT ON TABLE consolidations.at_risk_agents IS 'Agents flagged as at-risk based on underperformance patterns';
@@ -170,9 +230,9 @@ SELECT
     COUNT(*) OVER (PARTITION BY agent_email, metric_type) as total_active_warnings,
     COUNT(CASE WHEN warning_type = 'Verbal' THEN 1 END) OVER (PARTITION BY agent_email, metric_type) as verbal_warnings,
     COUNT(CASE WHEN warning_type = 'Written' THEN 1 END) OVER (PARTITION BY agent_email, metric_type) as written_warnings
-FROM consolidations.warning_history w
-WHERE is_active = true
-    AND (expires_date IS NULL OR expires_date >= CURRENT_DATE);
+FROM consolidations.warnings w
+WHERE status = 'Active'
+    AND (expiration_date IS NULL OR expiration_date >= CURRENT_DATE);
 
 -- View: Unactioned recommendations
 CREATE OR REPLACE VIEW consolidations.v_unactioned_recommendations AS
@@ -198,8 +258,8 @@ LEFT JOIN (
         COUNT(*) as total_active_warnings,
         COUNT(CASE WHEN warning_type = 'Verbal' THEN 1 END) as verbal_warnings,
         COUNT(CASE WHEN warning_type = 'Written' THEN 1 END) as written_warnings
-    FROM consolidations.warning_history
-    WHERE is_active = true
+    FROM consolidations.warnings
+    WHERE status = 'Active'
     GROUP BY agent_email, metric_type
 ) w ON a.agent_email = w.agent_email AND a.metric_type = w.metric_type
 WHERE a.is_resolved = false;
